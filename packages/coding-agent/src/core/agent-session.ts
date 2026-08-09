@@ -541,11 +541,19 @@ export class AgentSession {
 		this.agent.prepareNextTurnWithContext = async (turn, signal) => {
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
 			const previousContext = previousSnapshot?.context ?? turn.context;
+			const messagesBeforeCompaction = this.agent.state.messages;
+			if (turn.toolResults.length > 0 || this.agent.hasQueuedMessages()) {
+				await this._checkCompaction(turn.message);
+			}
 
 			return {
 				...previousSnapshot,
 				context: {
 					...previousContext,
+					messages:
+						this.agent.state.messages === messagesBeforeCompaction
+							? previousContext.messages
+							: this.agent.state.messages.slice(),
 					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
 					tools: this.agent.state.tools.slice(),
 				},
@@ -603,7 +611,7 @@ export class AgentSession {
 		}
 	}
 
-	// Track last assistant message for auto-compaction check
+	// Track last assistant message for post-run retry and compaction checks
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
@@ -1949,7 +1957,7 @@ export class AgentSession {
 
 	/**
 	 * Check if compaction is needed and run it.
-	 * Called after agent_end and before prompt submission.
+	 * Called between turns, after agent_end, and before prompt submission.
 	 *
 	 * Two cases:
 	 * 1. Recoverable failure: LLM returned context overflow or stopped below its desired output limit;
