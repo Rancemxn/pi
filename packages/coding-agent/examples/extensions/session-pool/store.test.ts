@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { parseCommandWords } from "./index.ts";
 import {
 	type AssignmentRecord,
 	createPoolPaths,
@@ -44,6 +45,15 @@ test("normalizes cwd and truncates UTF-8 without exceeding the byte limit", () =
 	assert.match(truncated, /output truncated/);
 	assert.ok(Buffer.byteLength(truncateUtf8(value, 5), "utf8") <= 5);
 	assert.ok(Buffer.byteLength(truncateUtf8(value), "utf8") <= MAX_REPORT_BYTES);
+});
+
+test("parses quoted values embedded in key=value arguments", () => {
+	assert.deepEqual(parseCommandWords('role=worker task="review the parser" worktree=C:\\work\\parser-a'), [
+		"role=worker",
+		"task=review the parser",
+		"worktree=C:\\work\\parser-a",
+	]);
+	assert.deepEqual(parseCommandWords("\"two words\" notes='keep it'"), ["two words", "notes=keep it"]);
 });
 
 test("round-trips command and event mailboxes", () => {

@@ -146,6 +146,43 @@ function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+export function parseCommandWords(args: string): string[] {
+	const words: string[] = [];
+	let word = "";
+	let quote: '"' | "'" | undefined;
+
+	const push = () => {
+		if (word) words.push(word);
+		word = "";
+	};
+
+	for (let index = 0; index < args.length; index++) {
+		const character = args[index];
+		if (quote) {
+			if (character === quote) {
+				quote = undefined;
+			} else if (character === "\\" && (args[index + 1] === quote || args[index + 1] === "\\")) {
+				word += args[++index];
+			} else {
+				word += character;
+			}
+		} else if (character === '"' || character === "'") {
+			quote = character;
+		} else if (/\s/.test(character)) {
+			push();
+		} else if (
+			character === "\\" &&
+			(args[index + 1] === '"' || args[index + 1] === "'" || args[index + 1] === "\\")
+		) {
+			word += args[++index];
+		} else {
+			word += character;
+		}
+	}
+	push();
+	return words;
+}
+
 function readMeta(value: unknown): PoolMeta {
 	if (!isObject(value)) return {};
 	const fields: MetaField[] = ["displayName", "role", "task", "model", "worktree", "notes"];
@@ -1386,18 +1423,6 @@ export default function sessionPool(pi: ExtensionAPI): void {
 		}
 		if (details.monitors.length > 0) lines.push(`monitors=${details.monitors.length}`);
 		return lines.join("\n");
-	}
-
-	function parseCommandWords(args: string): string[] {
-		const words: string[] = [];
-		const pattern = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+/g;
-		for (const match of args.matchAll(pattern)) {
-			const value = match[0];
-			if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
-				words.push(value.slice(1, -1).replace(/\\([\\"'])/g, "$1"));
-			else words.push(value);
-		}
-		return words;
 	}
 
 	function parseMetaWords(args: string): PoolMeta {
