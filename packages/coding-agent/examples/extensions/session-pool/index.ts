@@ -92,6 +92,8 @@ const PoolParamsSchema = Type.Object({
 	provider: Type.Optional(Type.String()),
 	model: Type.Optional(Type.String()),
 	thinkingLevel: Type.Optional(ThinkingLevelSchema),
+	// "effort" is the model-facing name; Pi's CLI still calls this thinking.
+	effort: Type.Optional(ThinkingLevelSchema),
 	displayName: Type.Optional(Type.String()),
 	role: Type.Optional(Type.String()),
 	task: Type.Optional(Type.String()),
@@ -128,6 +130,7 @@ interface Runtime {
 	userOverrides: Set<MetaField>;
 	status: SessionStatus;
 	activeAssignmentId?: string;
+	cancelRequested?: { assignmentId: string; reason: "abort" | "stop" };
 	sessionStartedAt?: number;
 	lastAssistantText: string;
 	lastAssistantStopReason?: string;
@@ -144,6 +147,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
+}
+
+export function requestedEffort(value: { effort?: unknown; thinkingLevel?: unknown }): string | undefined {
+	return stringValue(value.effort) ?? stringValue(value.thinkingLevel);
 }
 
 export function parseCommandWords(args: string): string[] {
@@ -514,6 +521,7 @@ export default function sessionPool(pi: ExtensionAPI): void {
 		runtime.spawnToken = process.env[SPAWN_TOKEN_ENV]?.trim() || undefined;
 		runtime.status = contextIsIdle(ctx) ? "idle" : "running";
 		runtime.activeAssignmentId = undefined;
+		runtime.cancelRequested = undefined;
 		runtime.lastAssistantText = "";
 		runtime.lastAssistantStopReason = undefined;
 		const stored = parseStoredState(ctx);
@@ -551,7 +559,8 @@ export default function sessionPool(pi: ExtensionAPI): void {
 				sessionId: runtime.sessionId,
 				coordinatorId: runtime.ownerId,
 				...(runtime.activeAssignmentId ? { assignmentId: runtime.activeAssignmentId } : {}),
-				error: "child session shut down",
+				...(runtime.cancelRequested ? { status: "cancelled", failed: false } : {}),
+				error: runtime.cancelRequested?.reason === "stop" ? "child session stopped" : "child session shut down",
 			});
 		}
 		if (runtime.sessionId) deleteSession(paths, runtime.sessionId);
@@ -620,7 +629,7 @@ export default function sessionPool(pi: ExtensionAPI): void {
 				throw new Error(`Model authentication is unavailable: ${provider}/${modelId}`);
 			modelLabel = `${provider}/${modelId}`;
 		}
-		const thinking = commandValue(payload, "thinkingLevel");
+		const thinking = requestedEffort(payload);
 		if (thinking) {
 			if (!isThinkingLevel(thinking)) throw new Error(`Invalid thinking level: ${thinking}`);
 			pi.setThinkingLevel(thinking);
@@ -671,10 +680,12 @@ export default function sessionPool(pi: ExtensionAPI): void {
 			runtime.ownerId = command.coordinatorId;
 			if (previousOwner !== command.coordinatorId) runtime.spawnToken = undefined;
 			runtime.activeAssignmentId = assignmentId;
+			runtime.cancelRequested = undefined;
 			runtime.lastAssistantText = "";
 			runtime.lastAssistantStopReason = undefined;
 			runtime.status = "running";
 			writeCurrentState();
+			await pi.sendUserMessage(prompt);
 			writeEvent(paths, {
 				kind: "accepted",
 				sessionId,
@@ -682,7 +693,6 @@ export default function sessionPool(pi: ExtensionAPI): void {
 				assignmentId,
 				status: "running",
 			});
-			pi.sendUserMessage(prompt);
 		} catch (error) {
 			runtime.activeAssignmentId = undefined;
 			runtime.status = "idle";
@@ -713,8 +723,8 @@ export default function sessionPool(pi: ExtensionAPI): void {
 		}
 		try {
 			const delivery = commandValue(command.payload, "delivery");
-			if (contextIsIdle(ctx)) pi.sendUserMessage(message);
-			else pi.sendUserMessage(message, { deliverAs: delivery === "followUp" ? "followUp" : "steer" });
+			if (contextIsIdle(ctx)) await pi.sendUserMessage(message);
+			else await pi.sendUserMessage(message, { deliverAs: delivery === "followUp" ? "followUp" : "steer" });
 		} catch (error) {
 			emitCommandRejection(command, sessionId, error instanceof Error ? error.message : String(error));
 		}
@@ -726,6 +736,13 @@ export default function sessionPool(pi: ExtensionAPI): void {
 			emitCommandRejection(command, runtime.sessionId, "session is not owned by this coordinator");
 			return;
 		}
+		if (!runtime.activeAssignmentId) {
+			emitCommandRejection(command, runtime.sessionId, "session has no active assignment");
+			return;
+		}
+		runtime.cancelRequested = { assignmentId: runtime.activeAssignmentId, reason: "abort" };
+		runtime.status = "stopping";
+		writeCurrentState();
 		runtime.ctx.abort();
 	}
 
@@ -753,9 +770,16 @@ export default function sessionPool(pi: ExtensionAPI): void {
 			emitCommandRejection(command, runtime.sessionId, "session is not owned by this coordinator");
 			return;
 		}
+		const assignmentId = runtime.activeAssignmentId;
+		runtime.cancelRequested = assignmentId ? { assignmentId, reason: "stop" } : undefined;
 		runtime.status = "stopping";
 		writeCurrentState();
-		writeEvent(paths, { kind: "stopped", sessionId: runtime.sessionId, coordinatorId: command.coordinatorId });
+		writeEvent(paths, {
+			kind: "stopped",
+			sessionId: runtime.sessionId,
+			coordinatorId: command.coordinatorId,
+			...(assignmentId ? { assignmentId, status: "cancelled", failed: false } : {}),
+		});
 		setTimeout(() => ctx.shutdown(), 0);
 	}
 
@@ -902,6 +926,13 @@ export default function sessionPool(pi: ExtensionAPI): void {
 	function handleCoordinatorEvent(event: PoolEvent): void {
 		const assignment = event.assignmentId ? readAssignment(paths, event.assignmentId) : undefined;
 		if (assignment && assignment.lastEventId === event.id) return;
+		if (!assignment && event.kind === "rejected") {
+			queueMainMessage(
+				`[session-pool] ${sessionDisplayName(event.sessionId)} rejected a command:\n${event.error || event.content || "unknown error"}`,
+				"queue",
+				{ sessionId: event.sessionId },
+			);
+		}
 		if (assignment) {
 			const updated: AssignmentRecord = { ...assignment, updatedAt: Date.now(), lastEventId: event.id };
 			switch (event.kind) {
@@ -909,7 +940,7 @@ export default function sessionPool(pi: ExtensionAPI): void {
 					updated.status = "running";
 					break;
 				case "settled":
-					updated.status = event.failed ? "failed" : "completed";
+					updated.status = event.status === "cancelled" ? "cancelled" : event.failed ? "failed" : "completed";
 					if (event.content !== undefined) updated.result = event.content;
 					if (event.error) updated.error = event.error;
 					break;
@@ -918,8 +949,12 @@ export default function sessionPool(pi: ExtensionAPI): void {
 					updated.error = event.error || event.content || "assignment rejected";
 					break;
 				case "exited":
-					updated.status = "failed";
+					if (event.status !== "cancelled" && updated.status !== "cancelled") updated.status = "failed";
 					updated.error = event.error || "child session exited";
+					break;
+				case "stopped":
+					updated.status = "cancelled";
+					updated.error = event.error || "child session stopped";
 					break;
 				case "report":
 					if (event.content !== undefined) updated.result = event.content;
@@ -937,15 +972,17 @@ export default function sessionPool(pi: ExtensionAPI): void {
 			: [];
 		if (event.kind === "report") queueReportEvent(event, monitors[0]);
 		if (event.kind === "settled" && monitors.length === 0) {
+			const outcome = event.status === "cancelled" ? "cancelled" : event.failed ? "failed" : "completed";
 			queueMainMessage(
-				`[session-pool] ${sessionDisplayName(event.sessionId)} ${event.failed ? "failed" : "completed"}:\n${event.content || event.error || "(no output)"}`,
+				`[session-pool] ${sessionDisplayName(event.sessionId)} ${outcome}:\n${event.content || event.error || "(no output)"}`,
 				"queue",
 				{ assignmentId: event.assignmentId, sessionId: event.sessionId },
 			);
 		}
-		if ((event.kind === "rejected" || event.kind === "exited") && monitors.length > 0) {
+		if ((event.kind === "rejected" || event.kind === "exited" || event.kind === "stopped") && monitors.length > 0) {
+			const outcome = event.kind === "stopped" || event.status === "cancelled" ? "cancelled" : "failed";
 			queueMainMessage(
-				`[session-pool] ${sessionDisplayName(event.sessionId)} failed:\n${event.error || event.content || "unknown error"}`,
+				`[session-pool] ${sessionDisplayName(event.sessionId)} ${outcome}:\n${event.error || event.content || "unknown error"}`,
 				monitors[0].wakePolicy,
 				{ monitorId: monitors[0].monitorId, assignmentId: event.assignmentId },
 			);
@@ -991,7 +1028,8 @@ export default function sessionPool(pi: ExtensionAPI): void {
 		if (mode === "headless") args.unshift("--mode", "rpc");
 		if (params.provider) args.push("--provider", params.provider);
 		if (params.model) args.push("--model", params.model);
-		if (params.thinkingLevel) args.push("--thinking", params.thinkingLevel);
+		const effort = requestedEffort(params);
+		if (effort) args.push("--thinking", effort);
 		if (params.displayName) args.push("--name", params.displayName);
 		return args;
 	}
@@ -1231,7 +1269,11 @@ export default function sessionPool(pi: ExtensionAPI): void {
 			meta: patchFromParams(params),
 			...(params.provider ? { provider: params.provider } : {}),
 			...(params.model ? { model: params.model } : {}),
-			...(params.thinkingLevel ? { thinkingLevel: params.thinkingLevel } : {}),
+			...(params.effort
+				? { effort: params.effort }
+				: params.thinkingLevel
+					? { thinkingLevel: params.thinkingLevel }
+					: {}),
 			...(params.force ? { force: true } : {}),
 		});
 		const acknowledged = await waitForAssignment(assignmentId, signal);
@@ -1562,7 +1604,7 @@ export default function sessionPool(pi: ExtensionAPI): void {
 		});
 
 		pi.registerCommand("pool-stop", {
-			description: "Stop a claimed automatically managed child",
+			description: "Stop a claimed child session",
 			handler: async (args, ctx) => {
 				ensureStarted(ctx);
 				const sessionId = parseCommandWords(args)[0];
@@ -1609,18 +1651,26 @@ export default function sessionPool(pi: ExtensionAPI): void {
 				writeCurrentState();
 				return;
 			}
-			const failed = runtime.lastAssistantStopReason === "error" || runtime.lastAssistantStopReason === "aborted";
+			const cancelled = runtime.cancelRequested?.assignmentId === assignmentId;
+			const failed =
+				!cancelled &&
+				(runtime.lastAssistantStopReason === "error" || runtime.lastAssistantStopReason === "aborted");
 			writeEvent(paths, {
 				kind: "settled",
 				sessionId: runtime.sessionId,
 				coordinatorId: runtime.ownerId,
 				assignmentId,
-				status: failed ? "failed" : "completed",
+				status: cancelled ? "cancelled" : failed ? "failed" : "completed",
 				failed,
 				content: truncateUtf8(runtime.lastAssistantText),
-				...(failed ? { error: runtime.lastAssistantStopReason || "child agent failed" } : {}),
+				...(cancelled
+					? { error: runtime.cancelRequested?.reason === "stop" ? "child session stopped" : "child agent aborted" }
+					: failed
+						? { error: runtime.lastAssistantStopReason || "child agent failed" }
+						: {}),
 			});
 			runtime.activeAssignmentId = undefined;
+			runtime.cancelRequested = undefined;
 			runtime.status = "idle";
 			writeCurrentState();
 			updateWidget();

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { parseCommandWords } from "./index.ts";
+import { parseCommandWords, requestedEffort } from "./index.ts";
 import {
 	type AssignmentRecord,
 	createPoolPaths,
@@ -54,6 +54,11 @@ test("parses quoted values embedded in key=value arguments", () => {
 		"worktree=C:\\work\\parser-a",
 	]);
 	assert.deepEqual(parseCommandWords("\"two words\" notes='keep it'"), ["two words", "notes=keep it"]);
+});
+
+test("prefers effort over the legacy thinkingLevel field", () => {
+	assert.equal(requestedEffort({ effort: "high", thinkingLevel: "low" }), "high");
+	assert.equal(requestedEffort({ thinkingLevel: "medium" }), "medium");
 });
 
 test("round-trips command and event mailboxes", () => {
