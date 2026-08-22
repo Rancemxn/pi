@@ -338,9 +338,9 @@ function createExtensionAPI(
 			runtime.sendMessage(message, options);
 		},
 
-		sendUserMessage(content, options): void {
+		sendUserMessage(content, options): void | Promise<void> {
 			runtime.assertActive();
-			runtime.sendUserMessage(content, options);
+			return runtime.sendUserMessage(content, options);
 		},
 
 		appendEntry(customType: string, data?: unknown): void {
@@ -495,32 +495,11 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 	};
 }
 
-async function loadExtension(
-	extensionPath: string,
-	cwd: string,
-	eventBus: EventBus,
-	runtime: ExtensionRuntime,
-	cacheToken?: ExtensionCacheToken,
-): Promise<{ extension: Extension | null; error: string | null }> {
-	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
-
-	try {
-		const factory = await loadExtensionModule(resolvedPath, cacheToken);
-		time(`${extensionPath} module import`, "extensions");
-		if (!factory) {
-			return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
-		}
-
-		const extension = createExtension(extensionPath, resolvedPath);
-		const api = createExtensionAPI(extension, runtime, cwd, eventBus);
-		await factory(api);
-		time(`${extensionPath} factory`, "extensions");
-
-		return { extension, error: null };
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		return { extension: null, error: `Failed to load extension: ${message}` };
-	}
+interface LoadedExtensionModule {
+	extensionPath: string;
+	resolvedPath: string;
+	factory?: ExtensionFactory;
+	error?: string;
 }
 
 /**
@@ -558,22 +537,43 @@ async function loadExtensionsInternal(
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const resolvedRuntime = runtime ?? createExtensionRuntime();
 
-	for (const extPath of paths) {
-		const { extension, error } = await loadExtension(
-			extPath,
-			resolvedCwd,
-			resolvedEventBus,
-			resolvedRuntime,
-			cacheToken,
-		);
+	// Module evaluation is independent, but factories mutate the shared runtime and
+	// must keep their configured order for deterministic registrations.
+	const modules = await Promise.all(
+		paths.map(async (extensionPath): Promise<LoadedExtensionModule> => {
+			const resolvedPath = resolvePath(extensionPath, resolvedCwd, { normalizeUnicodeSpaces: true });
+			try {
+				const factory = await loadExtensionModule(resolvedPath, cacheToken);
+				time(`${extensionPath} module import`, "extensions");
+				if (!factory) {
+					return {
+						extensionPath,
+						resolvedPath,
+						error: `Extension does not export a valid factory function: ${extensionPath}`,
+					};
+				}
+				return { extensionPath, resolvedPath, factory };
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return { extensionPath, resolvedPath, error: `Failed to load extension: ${message}` };
+			}
+		}),
+	);
 
-		if (error) {
-			errors.push({ path: extPath, error });
+	for (const loaded of modules) {
+		if (loaded.error || !loaded.factory) {
+			if (loaded.error) errors.push({ path: loaded.extensionPath, error: loaded.error });
 			continue;
 		}
-
-		if (extension) {
+		try {
+			const extension = createExtension(loaded.extensionPath, loaded.resolvedPath);
+			const api = createExtensionAPI(extension, resolvedRuntime, resolvedCwd, resolvedEventBus);
+			await loaded.factory(api);
+			time(`${loaded.extensionPath} factory`, "extensions");
 			extensions.push(extension);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			errors.push({ path: loaded.extensionPath, error: `Failed to load extension: ${message}` });
 		}
 	}
 

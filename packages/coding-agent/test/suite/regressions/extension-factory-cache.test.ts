@@ -8,6 +8,7 @@ import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
 interface TestState {
 	moduleLoads?: number;
 	factoryRuns?: number;
+	factoryOrder?: string[];
 }
 
 function state(): TestState {
@@ -90,6 +91,34 @@ describe("extension factory cache", () => {
 
 		expect(state().moduleLoads).toBe(2);
 		expect(state().factoryRuns).toBe(2);
+	});
+
+	it("keeps factory side effects in configured order", async () => {
+		const { root, cwd } = fixture("factory-order");
+		const first = join(root, "first.ts");
+		const second = join(root, "second.ts");
+		writeFileSync(
+			first,
+			`export default async function () {
+	const state = (globalThis.__extensionFactoryCacheTest ??= {});
+	(state.factoryOrder ??= []).push("first:start");
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	state.factoryOrder.push("first:end");
+}`,
+			"utf-8",
+		);
+		writeFileSync(
+			second,
+			`export default function () {
+	const state = (globalThis.__extensionFactoryCacheTest ??= {});
+	(state.factoryOrder ??= []).push("second");
+}`,
+			"utf-8",
+		);
+
+		await loadExtensions([first, second], cwd);
+
+		expect(state().factoryOrder).toEqual(["first:start", "first:end", "second"]);
 	});
 
 	it("clears the cache on resource loader reload", async () => {
