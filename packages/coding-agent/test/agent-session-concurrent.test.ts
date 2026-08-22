@@ -271,13 +271,16 @@ describe("AgentSession concurrent prompt guard", () => {
 		const pi = (
 			globalThis as typeof globalThis & {
 				testExtensionApi?: {
-					sendUserMessage: (content: string, options?: { deliverAs?: "steer" | "followUp" }) => void;
+					sendUserMessage: (
+						content: string,
+						options?: { deliverAs?: "steer" | "followUp" },
+					) => void | Promise<void>;
 				};
 			}
 		).testExtensionApi;
 		expect(pi).toBeDefined();
 
-		pi!.sendUserMessage("Steer from extension", { deliverAs: "steer" });
+		await pi!.sendUserMessage("Steer from extension", { deliverAs: "steer" });
 		await new Promise((resolve) => setTimeout(resolve, 25));
 
 		expect(session.pendingMessageCount).toBe(1);

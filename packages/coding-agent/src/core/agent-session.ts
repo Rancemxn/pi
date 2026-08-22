@@ -1499,7 +1499,11 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			preflightResult?: (success: boolean) => void;
+		},
 	): Promise<void> {
 		// Normalize content to text string + optional images
 		let text: string;
@@ -1526,6 +1530,7 @@ export class AgentSession {
 			streamingBehavior: options?.deliverAs,
 			images,
 			source: "extension",
+			preflightResult: options?.preflightResult,
 		});
 	}
 
@@ -2035,8 +2040,8 @@ export class AgentSession {
 	}
 
 	/**
-		 * Dispatch automatic compaction after `agent_end` or before prompt submission.
-		 * Manual compaction does not call this method; it enters through `compact()`.
+	 * Dispatch automatic compaction after `agent_end` or before prompt submission.
+	 * Manual compaction does not call this method; it enters through `compact()`.
 	 *
 	 * Automatic cases:
 	 * 1. Overflow with retry: a context-overflow error or recoverable length stop;
@@ -2506,15 +2511,26 @@ export class AgentSession {
 						});
 					});
 				},
-				sendUserMessage: (content, options) => {
-					this.sendUserMessage(content, options).catch((err) => {
-						runner.emitError({
-							extensionPath: "<runtime>",
-							event: "send_user_message",
-							error: err instanceof Error ? err.message : String(err),
+				sendUserMessage: (content, options) =>
+					new Promise<void>((resolve, reject) => {
+						let accepted = false;
+						const run = this.sendUserMessage(content, {
+							...options,
+							preflightResult: (success) => {
+								if (!success) return;
+								accepted = true;
+								resolve();
+							},
 						});
-					});
-				},
+						void run.catch((err) => {
+							runner.emitError({
+								extensionPath: "<runtime>",
+								event: "send_user_message",
+								error: err instanceof Error ? err.message : String(err),
+							});
+							if (!accepted) reject(err);
+						});
+					}),
 				appendEntry: (customType, data) => {
 					const entryId = this.sessionManager.appendCustomEntry(customType, data);
 					const entry = this.sessionManager.getEntry(entryId);

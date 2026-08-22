@@ -3130,6 +3130,7 @@ export class InteractiveMode {
 				this.editor.setText("");
 				await this.session.prompt(text, { streamingBehavior: "steer" });
 				this.updatePendingMessagesDisplay();
+				this.showStatus("Steering queued; current tool calls will finish first");
 				this.ui.requestRender();
 				return;
 			}
