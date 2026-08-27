@@ -107,6 +107,39 @@ describe("openai-responses provider defaults", () => {
 		});
 	});
 
+	it("requests detailed reasoning summaries for GPT Responses models", async () => {
+		const model: Model<"openai-responses"> = {
+			...getModel("openai", "gpt-5.4"),
+			provider: "agent",
+			baseUrl: "https://agent.example.test/v1",
+		};
+		let capturedPayload: any;
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response("data: [DONE]\\n\\n", {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			}),
+		);
+
+		const stream = streamOpenAIResponses(
+			model,
+			{ messages: [{ role: "user", content: "hi", timestamp: Date.now() }] },
+			{
+				apiKey: "test-key",
+				reasoningEffort: "max",
+				onPayload: (payload) => {
+					capturedPayload = payload;
+				},
+			},
+		);
+		for await (const event of stream) {
+			if (event.type === "done" || event.type === "error") break;
+		}
+
+		expect(capturedPayload).toMatchObject({ reasoning: { effort: "max", summary: "detailed" } });
+	});
+
 	it("forwards required tool choice", async () => {
 		let capturedPayload: unknown;
 

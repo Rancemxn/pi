@@ -439,6 +439,10 @@ export async function processResponsesStream<TApi extends Api>(
 	let sawTerminalResponseEvent = false;
 	const outputSlots = new Map<number, ResponsesOutputSlot>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
+	// A few Responses-compatible gateways emit reasoning deltas before the
+	// corresponding output_item.added event. Keep those deltas until the slot
+	// exists instead of silently dropping the model's thinking summary.
+	const pendingReasoning = new Map<number, string>();
 	const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
 		if (item.type === "message" && item.phase === "final_answer") {
 			output.stopReason = "stop";
@@ -462,7 +466,11 @@ export async function processResponsesStream<TApi extends Api>(
 	};
 	const createSlot = (outputIndex: number, item: ResponseOutputItem): ResponsesOutputSlot | undefined => {
 		if (item.type === "reasoning") {
-			const block: ThinkingContent = { type: "thinking", thinking: "" };
+			const block: ThinkingContent = {
+				type: "thinking",
+				thinking: pendingReasoning.get(outputIndex) ?? "",
+			};
+			pendingReasoning.delete(outputIndex);
 			output.content.push(block);
 			const slot = {
 				type: "thinking",
@@ -601,7 +609,10 @@ export async function processResponsesStream<TApi extends Api>(
 			createSlot(event.output_index, event.item);
 		} else if (event.type === "response.reasoning_summary_text.delta") {
 			const slot = getSlot(event.output_index, "thinking");
-			if (!slot) continue;
+			if (!slot) {
+				pendingReasoning.set(event.output_index, (pendingReasoning.get(event.output_index) ?? "") + event.delta);
+				continue;
+			}
 			slot.block.thinking += event.delta;
 			stream.push({
 				type: "thinking_delta",
@@ -611,7 +622,10 @@ export async function processResponsesStream<TApi extends Api>(
 			});
 		} else if (event.type === "response.reasoning_summary_part.done") {
 			const slot = getSlot(event.output_index, "thinking");
-			if (!slot) continue;
+			if (!slot) {
+				pendingReasoning.set(event.output_index, `${pendingReasoning.get(event.output_index) ?? ""}\n\n`);
+				continue;
+			}
 			slot.block.thinking += "\n\n";
 			stream.push({
 				type: "thinking_delta",
@@ -621,7 +635,10 @@ export async function processResponsesStream<TApi extends Api>(
 			});
 		} else if (event.type === "response.reasoning_text.delta") {
 			const slot = getSlot(event.output_index, "thinking");
-			if (!slot) continue;
+			if (!slot) {
+				pendingReasoning.set(event.output_index, (pendingReasoning.get(event.output_index) ?? "") + event.delta);
+				continue;
+			}
 			slot.block.thinking += event.delta;
 			stream.push({
 				type: "thinking_delta",

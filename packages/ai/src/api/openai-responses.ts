@@ -327,7 +327,10 @@ function buildParams(
 				: "medium";
 			params.reasoning = {
 				effort: effort as NonNullable<typeof params.reasoning>["effort"],
-				summary: options?.reasoningSummary || "auto",
+				// Some Responses-compatible gateways expose reasoning token usage but
+				// omit the summary when auto is requested. GPT models are expected to
+				// show a useful thinking summary in Pi, so request it explicitly.
+				summary: options?.reasoningSummary || (/^gpt-/i.test(model.id) ? "detailed" : "auto"),
 			};
 			params.include = ["reasoning.encrypted_content"];
 		} else if (model.provider !== "github-copilot" && model.thinkingLevelMap?.off !== null) {

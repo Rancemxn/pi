@@ -79,6 +79,7 @@ describe("createAgentSession stream options", () => {
 		settings: Partial<Settings>,
 		requestOptions: SimpleStreamOptions = {},
 		extensionSource?: string,
+		useExtensionContext = false,
 	): Promise<SimpleStreamOptions | undefined> {
 		const model = createModel(api);
 		const settingsManager = SettingsManager.inMemory(settings);
@@ -114,7 +115,10 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			const stream = await session.agent.streamFunction(model, { messages: [] }, requestOptions);
+			const streamFn = useExtensionContext
+				? session.extensionRunner.createContext().streamSimple!
+				: session.agent.streamFunction;
+			const stream = await streamFn(model, { messages: [] }, requestOptions);
 			await stream.result();
 			return capturedOptions;
 		} finally {
@@ -193,5 +197,24 @@ describe("createAgentSession stream options", () => {
 			"x-hook": "provider:model:explicit",
 		});
 		expect(options).not.toHaveProperty("transformHeaders");
+	});
+
+	it("exposes the same header lifecycle through ExtensionContext.streamSimple", async () => {
+		const options = await captureStreamOptions(
+			"openai-completions",
+			{},
+			{ headers: { "x-explicit": "explicit" } },
+			`export default function (pi) {
+				pi.on("before_provider_headers", (event) => {
+					event.headers["x-worker-hook"] = event.headers["x-explicit"];
+				});
+			}`,
+			true,
+		);
+
+		expect(options?.headers).toMatchObject({
+			"x-explicit": "explicit",
+			"x-worker-hook": "explicit",
+		});
 	});
 });

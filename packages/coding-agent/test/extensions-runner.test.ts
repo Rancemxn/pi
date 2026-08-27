@@ -6,6 +6,7 @@ import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createExtensionRuntime, discoverAndLoadExtensions, loadExtensions } from "../src/core/extensions/loader.ts";
@@ -90,6 +91,7 @@ describe("ExtensionRunner", () => {
 
 	const extensionContextActions: ExtensionContextActions = {
 		getModel: () => undefined,
+		streamSimple: vi.fn(),
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		getSignal: () => undefined,
@@ -983,6 +985,25 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("before_provider_headers", () => {
+		it("exposes the actual request model to handlers", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("before_provider_headers", (event, ctx) => {
+						event.headers["X-Model"] = ctx.model?.id;
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "request-model.ts"), extCode);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const model = { id: "worker-model" } as Model<any>;
+
+			const headers = await runner.emitBeforeProviderHeaders({}, model);
+
+			expect(headers["X-Model"]).toBe("worker-model");
+		});
+
 		it("lets a handler mutate headers in place and preserves existing headers", async () => {
 			const extCode = `
 				export default function(pi) {

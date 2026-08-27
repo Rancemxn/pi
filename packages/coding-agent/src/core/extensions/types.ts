@@ -12,6 +12,7 @@ import type {
 	AgentMessage,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	StreamFn,
 	ThinkingLevel,
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
@@ -317,6 +318,8 @@ export interface ExtensionContext {
 	sessionManager: ReadonlySessionManager;
 	/** Model registry for API key resolution */
 	modelRegistry: ModelRegistry;
+	/** Stream a model request through Pi's configured provider runtime and extension hooks, when supported by the host. */
+	streamSimple?: StreamFn;
 	/** Current model (may be undefined) */
 	model: Model<any> | undefined;
 	/** Models scoped to this session (resolved from `--models` /
@@ -1671,6 +1674,7 @@ export interface ExtensionActions {
 export interface ExtensionContextActions {
 	getModel: () => Model<any> | undefined;
 	getScopedModels: () => readonly ScopedModel[];
+	streamSimple: StreamFn;
 	isIdle: () => boolean;
 	isProjectTrusted: () => boolean;
 	getSignal: () => AbortSignal | undefined;

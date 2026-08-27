@@ -2563,6 +2563,13 @@ export class AgentSession {
 			{
 				getModel: () => this.model,
 				getScopedModels: () => this._scopedModels,
+				streamSimple: (model, context, options) =>
+					this.agent.streamFunction(model, context, {
+						...options,
+						sessionId: options?.sessionId ?? this.agent.sessionId,
+						onPayload: options?.onPayload ?? this.agent.onPayload,
+						onResponse: options?.onResponse ?? this.agent.onResponse,
+					}),
 				isIdle: () => this.isIdle,
 				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 				getSignal: () => this.agent.signal,

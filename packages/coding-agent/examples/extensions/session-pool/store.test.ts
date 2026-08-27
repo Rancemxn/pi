@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { parseCommandWords, requestedEffort } from "./index.ts";
+import { firstPoolResultLine, parseCommandWords, poolCallLabel, requestedEffort, shortPoolId } from "./index.ts";
 import {
 	type AssignmentRecord,
 	createPoolPaths,
@@ -59,6 +59,16 @@ test("parses quoted values embedded in key=value arguments", () => {
 test("prefers effort over the legacy thinkingLevel field", () => {
 	assert.equal(requestedEffort({ effort: "high", thinkingLevel: "low" }), "high");
 	assert.equal(requestedEffort({ thinkingLevel: "medium" }), "medium");
+});
+
+test("keeps session-pool tool rows compact while preserving expansion text", () => {
+	assert.equal(shortPoolId("assignment-12345678-rest"), "assignment:12345678");
+	assert.equal(poolCallLabel({ action: "monitor_start", assignmentIds: ["a", "b"] }), "monitor_start 2 assignments");
+	assert.equal(
+		firstPoolResultLine({ content: [{ type: "text", text: "assignment assignment-1: completed\nfull payload" }] }),
+		"assignment assignment-1: completed",
+	);
+	assert.equal(firstPoolResultLine({ content: [] }), "done");
 });
 
 test("round-trips command and event mailboxes", () => {

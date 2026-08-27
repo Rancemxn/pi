@@ -33,8 +33,10 @@ In a session that should be discoverable, run:
 ```
 
 Use `/pool-unready` to hide it. Ready state and metadata are stored in the Pi
-session branch and survive an extension/session reload. `/pool-status` and the
-TUI widget show local sessions, ownership, status, and active monitors.
+session branch and survive an extension/session reload. `/pool-status` shows
+local sessions, ownership, status, and active monitors. The TUI panel is hidden
+by default; use `/pool-panel on`, `/pool-panel off`, or `/pool-panel toggle` to
+control it manually.
 
 ## Automatic children
 

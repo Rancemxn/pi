@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import {
 	type AssignmentRecord,
@@ -49,6 +50,7 @@ const EXTENSION_PATH = fileURLToPath(import.meta.url);
 const META_ENTRY = "session-pool-meta";
 const MODE_ENTRY = "session-pool-mode";
 const READY_ENTRY = "session-pool-ready";
+const PANEL_ENTRY = "session-pool-panel";
 const CHILD_ENV = "PI_SESSION_POOL_CHILD";
 const COORDINATOR_ENV = "PI_SESSION_POOL_COORDINATOR_ID";
 const SPAWN_TOKEN_ENV = "PI_SESSION_POOL_SPAWN_TOKEN";
@@ -122,6 +124,7 @@ interface Runtime {
 	sessionId?: string;
 	cwd?: string;
 	mode: PoolMode;
+	panelVisible: boolean;
 	manualReady: boolean;
 	managed: boolean;
 	ownerId?: string;
@@ -151,6 +154,26 @@ function stringValue(value: unknown): string | undefined {
 
 export function requestedEffort(value: { effort?: unknown; thinkingLevel?: unknown }): string | undefined {
 	return stringValue(value.effort) ?? stringValue(value.thinkingLevel);
+}
+
+export function shortPoolId(value: string | undefined): string {
+	if (!value) return "";
+	const separator = value.indexOf("-");
+	return separator > 0
+		? `${value.slice(0, separator)}:${value.slice(separator + 1, separator + 9)}`
+		: value.slice(0, 12);
+}
+
+export function poolCallLabel(args: PoolParams): string {
+	const target = args.sessionId ?? args.assignmentId ?? args.monitorId;
+	const targetLabel = target ? ` ${shortPoolId(target)}` : "";
+	const batchLabel = args.assignmentIds?.length ? ` ${args.assignmentIds.length} assignments` : "";
+	return `${args.action}${targetLabel}${batchLabel}`;
+}
+
+export function firstPoolResultLine(result: { content?: readonly { type?: string; text?: string }[] }): string {
+	const text = result.content?.find((part) => part.type === "text" && typeof part.text === "string")?.text;
+	return text?.split("\n")[0]?.trim() || "done";
 }
 
 export function parseCommandWords(args: string): string[] {
@@ -227,11 +250,13 @@ function parseStoredState(ctx: ExtensionContext): {
 	overrides: Set<MetaField>;
 	mode: PoolMode;
 	ready: boolean;
+	panelVisible: boolean;
 } {
 	let meta: PoolMeta = {};
 	let overrides = new Set<MetaField>();
 	let mode: PoolMode = "off";
 	let ready = false;
+	let panelVisible = false;
 	for (const entry of ctx.sessionManager.getBranch()) {
 		if (entry.type !== "custom") continue;
 		if (entry.customType === META_ENTRY && isObject(entry.data)) {
@@ -254,8 +279,11 @@ function parseStoredState(ctx: ExtensionContext): {
 		if (entry.customType === READY_ENTRY && isObject(entry.data) && typeof entry.data.ready === "boolean") {
 			ready = entry.data.ready;
 		}
+		if (entry.customType === PANEL_ENTRY && isObject(entry.data) && typeof entry.data.visible === "boolean") {
+			panelVisible = entry.data.visible;
+		}
 	}
-	return { meta, overrides, mode, ready };
+	return { meta, overrides, mode, ready, panelVisible };
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -333,6 +361,7 @@ export default function sessionPool(pi: ExtensionAPI): void {
 
 	const runtime: Runtime = {
 		mode: "off",
+		panelVisible: false,
 		manualReady: false,
 		managed: process.env[CHILD_ENV] === "1",
 		meta: {},
@@ -354,6 +383,10 @@ export default function sessionPool(pi: ExtensionAPI): void {
 
 	function saveReady(): void {
 		pi.appendEntry(READY_ENTRY, { ready: runtime.manualReady });
+	}
+
+	function savePanel(): void {
+		pi.appendEntry(PANEL_ENTRY, { visible: runtime.panelVisible });
 	}
 
 	function applyMetaPatch(patch: PoolMeta, source: MetaSource, force = false): void {
@@ -433,6 +466,10 @@ export default function sessionPool(pi: ExtensionAPI): void {
 		const sessionId = runtime.sessionId;
 		const cwd = runtime.cwd;
 		if (!ctx || !sessionId || !cwd || ctx.mode !== "tui") return;
+		if (!runtime.panelVisible) {
+			setWidgetText("");
+			return;
+		}
 		const active =
 			runtime.mode !== "off" ||
 			runtime.manualReady ||
@@ -528,6 +565,7 @@ export default function sessionPool(pi: ExtensionAPI): void {
 		runtime.meta = stored.meta;
 		runtime.userOverrides = stored.overrides;
 		runtime.mode = runtime.managed ? "off" : stored.mode;
+		runtime.panelVisible = stored.panelVisible;
 		runtime.manualReady = runtime.managed || stored.ready;
 		writeCurrentState();
 		startTimers();
@@ -1555,6 +1593,22 @@ export default function sessionPool(pi: ExtensionAPI): void {
 			},
 		});
 
+		pi.registerCommand("pool-panel", {
+			description: "Show or hide the session-pool TUI panel",
+			handler: async (args, ctx) => {
+				ensureStarted(ctx);
+				const value = parseCommandWords(args)[0]?.toLowerCase() ?? "toggle";
+				if (value !== "on" && value !== "off" && value !== "toggle") {
+					notify(ctx, "usage: /pool-panel on|off|toggle", "warning");
+					return;
+				}
+				runtime.panelVisible = value === "toggle" ? !runtime.panelVisible : value === "on";
+				savePanel();
+				updateWidget();
+				notify(ctx, `session-pool panel: ${runtime.panelVisible ? "on" : "off"}`);
+			},
+		});
+
 		pi.registerCommand("pool-send", {
 			description: "Send a steer or follow-up message to a claimed child",
 			handler: async (args, ctx) => {
@@ -1699,6 +1753,33 @@ export default function sessionPool(pi: ExtensionAPI): void {
 				"A queue wake policy returns child reports on the next user/model turn without triggering a model call; use wake only when an immediate coordinator turn is worth the token cost.",
 			],
 			parameters: PoolParamsSchema,
+			renderShell: "self",
+			renderCall(args, theme) {
+				return new Text(
+					theme.fg("toolTitle", theme.bold("session_pool ")) + theme.fg("accent", poolCallLabel(args)),
+					0,
+					0,
+				);
+			},
+			renderResult(result, { expanded, isPartial }, theme, context) {
+				if (isPartial) return new Text(theme.fg("warning", "session_pool running"), 0, 0);
+				if (expanded) {
+					const output = result.content
+						.filter(
+							(part): part is { type: "text"; text: string } =>
+								part.type === "text" && typeof part.text === "string",
+						)
+						.map((part) => part.text)
+						.join("\n");
+					return new Text(output || "(empty result)", 0, 0);
+				}
+				const line = firstPoolResultLine(result);
+				return new Text(
+					`${context.isError ? theme.fg("error", "error") : theme.fg("success", "ok")} ${theme.fg("muted", line)}`,
+					0,
+					0,
+				);
+			},
 			executionMode: "sequential",
 			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 				ensureStarted(ctx);

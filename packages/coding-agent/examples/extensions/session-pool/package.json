@@ -1,0 +1,17 @@
+{
+  "name": "pi-session-pool",
+  "version": "0.1.0",
+  "description": "Coordinate independent Pi sessions from one coordinator session.",
+  "private": true,
+  "type": "module",
+  "keywords": ["pi-package", "pi", "pi-extension", "session-pool"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

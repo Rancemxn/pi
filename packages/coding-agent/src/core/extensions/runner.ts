@@ -2,7 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model, Provider, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
@@ -276,6 +276,9 @@ export class ExtensionRunner {
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
+	private streamSimpleFn: StreamFn = () => {
+		throw new Error("Extension streamSimple is unavailable before core binding.");
+	};
 	private isIdleFn: () => boolean = () => true;
 	private isProjectTrustedFn: () => boolean = () => true;
 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
@@ -339,6 +342,7 @@ export class ExtensionRunner {
 		// Context actions (required)
 		this.getModel = contextActions.getModel;
 		this.getScopedModels = contextActions.getScopedModels;
+		this.streamSimpleFn = contextActions.streamSimple;
 		this.isIdleFn = contextActions.isIdle;
 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
 		this.getSignalFn = contextActions.getSignal;
@@ -670,9 +674,9 @@ export class ExtensionRunner {
 	 * Create an ExtensionContext for use in event handlers and tool execution.
 	 * Context values are resolved at call time, so changes via bindCore/bindUI are reflected.
 	 */
-	createContext(): ExtensionContext {
+	createContext(modelOverride?: Model<any>): ExtensionContext {
 		const runner = this;
-		const getModel = this.getModel;
+		const getModel = modelOverride ? () => modelOverride : this.getModel;
 		const getScopedModels = this.getScopedModels;
 		return {
 			get ui() {
@@ -698,6 +702,10 @@ export class ExtensionRunner {
 			get modelRegistry() {
 				runner.assertActive();
 				return runner.modelRegistry;
+			},
+			streamSimple: (...args) => {
+				runner.assertActive();
+				return runner.streamSimpleFn(...args);
 			},
 			get model() {
 				runner.assertActive();
@@ -1047,8 +1055,8 @@ export class ExtensionRunner {
 		return currentPayload;
 	}
 
-	async emitBeforeProviderHeaders(headers: ProviderHeaders): Promise<ProviderHeaders> {
-		const ctx = this.createContext();
+	async emitBeforeProviderHeaders(headers: ProviderHeaders, model?: Model<any>): Promise<ProviderHeaders> {
+		const ctx = this.createContext(model);
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_provider_headers");

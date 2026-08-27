@@ -107,6 +107,46 @@ async function* createEarlyEofEvents(): AsyncIterable<ResponseStreamEvent> {
 	} as ResponseStreamEvent;
 }
 
+async function* createOutOfOrderReasoningEvents(): AsyncIterable<ResponseStreamEvent> {
+	// Some gateways send summary deltas before output_item.added. Pi must retain
+	// them so the resulting assistant message still contains a thinking block.
+	yield {
+		type: "response.reasoning_summary_text.delta",
+		sequence_number: 0,
+		output_index: 0,
+		content_index: 0,
+		item_id: "rs_out_of_order",
+		summary_index: 0,
+		delta: "summary arrives first",
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.reasoning_summary_part.done",
+		sequence_number: 1,
+		output_index: 0,
+		content_index: 0,
+		item_id: "rs_out_of_order",
+		part: { type: "summary_text", text: "summary arrives first" },
+		summary_index: 0,
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.output_item.added",
+		sequence_number: 2,
+		output_index: 0,
+		item: { type: "reasoning", id: "rs_out_of_order", summary: [] },
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.output_item.done",
+		sequence_number: 3,
+		output_index: 0,
+		item: { type: "reasoning", id: "rs_out_of_order", summary: [] },
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.completed",
+		sequence_number: 4,
+		response: { id: "resp_out_of_order", status: "completed" },
+	} as ResponseStreamEvent;
+}
+
 async function* createCompletedEvents(): AsyncIterable<ResponseStreamEvent> {
 	yield {
 		type: "response.completed",
@@ -236,6 +276,22 @@ describe("OpenAI Responses terminal event handling", () => {
 		expect(lastEvent?.type).toBe("error");
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toBe("OpenAI Responses stream ended before a terminal response event");
+	});
+
+	it("preserves reasoning deltas that arrive before the output item", async () => {
+		const model = createModel();
+		const output = createOutput(model);
+		const stream = new AssistantMessageEventStream();
+
+		await processResponsesStream(createOutOfOrderReasoningEvents(), output, stream, model);
+
+		expect(output.content).toEqual([
+			{
+				type: "thinking",
+				thinking: "summary arrives first\n\n",
+				thinkingSignature: JSON.stringify({ type: "reasoning", id: "rs_out_of_order", summary: [] }),
+			},
+		]);
 	});
 
 	it.each([
