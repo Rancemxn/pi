@@ -354,6 +354,22 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("transport", () => {
+		it("defaults to SSE and preserves explicit WebSocket choices", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getTransport()).toBe("sse");
+			manager.setTransport("websocket-cached");
+			await manager.flush();
+
+			expect(manager.getTransport()).toBe("websocket-cached");
+			expect(SettingsManager.inMemory({ transport: "auto" }).getTransport()).toBe("auto");
+			expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"))).toMatchObject({
+				transport: "websocket-cached",
+			});
+		});
+	});
+
 	describe("httpIdleTimeoutMs", () => {
 		it("should default to 5 minutes", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);

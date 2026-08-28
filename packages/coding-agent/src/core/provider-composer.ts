@@ -209,6 +209,7 @@ function applyExtension(
 	providerId: string,
 	models: readonly Model<Api>[],
 	config: ProviderConfigInput | undefined,
+	modelsConfig?: ModelsJsonProvider,
 ): Model<Api>[] {
 	if (!config) return [...models];
 	if (!config.models) {
@@ -230,6 +231,7 @@ function applyExtension(
 			provider: providerId,
 			baseUrl,
 			headers: undefined,
+			compat: mergeCompat(defaults?.compat ?? modelsConfig?.compat, definition.compat),
 		};
 	});
 }
@@ -413,7 +415,12 @@ export function validateExtensionProvider(
 	if (extension.streamSimple && !extension.api) {
 		throw new Error(`Provider ${providerId}: "api" is required when registering streamSimple.`);
 	}
-	applyExtension(providerId, applyModelsJson(providerId, base?.getModels() ?? [], modelsConfig), extension);
+	applyExtension(
+		providerId,
+		applyModelsJson(providerId, base?.getModels() ?? [], modelsConfig),
+		extension,
+		modelsConfig,
+	);
 }
 
 /** Compose built-in, models.json, and extension layers without reading credentials. */
@@ -435,6 +442,7 @@ export function composeModelProvider(
 			providerId,
 			applyModelsJson(providerId, base?.getModels() ?? [], config),
 			currentExtension(),
+			config,
 		);
 		if (extensionOAuthCredential && extension?.oauth?.modifyModels) {
 			models = extension.oauth.modifyModels(models, extensionOAuthCredential);
@@ -492,10 +500,15 @@ export function composeModelProvider(
 							update: () => {
 								if (refreshed) {
 									// Validate before publishing the new synchronous list.
-									applyExtension(providerId, applyModelsJson(providerId, base?.getModels() ?? [], config), {
-										...extension,
-										models: refreshed,
-									});
+									applyExtension(
+										providerId,
+										applyModelsJson(providerId, base?.getModels() ?? [], config),
+										{
+											...extension,
+											models: refreshed,
+										},
+										config,
+									);
 									refreshedExtensionModels = refreshed;
 								}
 								extensionOAuthCredential = oauthCredential;

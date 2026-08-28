@@ -97,7 +97,7 @@ export interface Settings {
 	defaultModel?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	modelThinkingLevels?: Record<string, ThinkingLevel>; // per-model default thinking level overrides keyed by "provider/modelId"
-	transport?: TransportSetting; // default: "auto"
+	transport?: TransportSetting; // default: "sse" (WebSocket off)
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
 	theme?: string;
@@ -817,7 +817,7 @@ export class SettingsManager {
 	}
 
 	getTransport(): TransportSetting {
-		return this.settings.transport ?? "auto";
+		return this.settings.transport ?? "sse";
 	}
 
 	setTransport(transport: TransportSetting): void {

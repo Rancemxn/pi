@@ -7,6 +7,7 @@ import type {
 	Context,
 	Model,
 	OpenAICompletionsCompat,
+	OpenAIResponsesCompat,
 } from "@earendil-works/pi-ai/compat";
 import { getApiProvider, getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -431,6 +432,33 @@ describe("ModelRegistry", () => {
 				expect(compat?.supportsUsageInStreaming).toBe(false);
 				expect(compat?.supportsStrictMode).toBe(false);
 			}
+		});
+
+		test("provider-level compat enables Responses WebSocket transport", async () => {
+			writeRawModelsJson({
+				demo: {
+					baseUrl: "https://example.com/v1",
+					apiKey: "DEMO_KEY",
+					api: "openai-responses",
+					compat: { supportsResponsesWebSocket: true },
+					models: [
+						{
+							id: "demo-model",
+							reasoning: false,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 1000,
+							maxTokens: 100,
+						},
+					],
+				},
+			});
+
+			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+			const compat = registry.find("demo", "demo-model")?.compat as OpenAIResponsesCompat | undefined;
+
+			expect(registry.getError()).toBeUndefined();
+			expect(compat?.supportsResponsesWebSocket).toBe(true);
 		});
 
 		test("model schema accepts thinkingLevelMap and compat schema accepts supportsStrictMode and cacheControlFormat", async () => {
@@ -1094,6 +1122,23 @@ describe("ModelRegistry", () => {
 				ok: true,
 				headers: { "x-model-override": "enabled" },
 			});
+		});
+
+		test("provider-level compat applies to dynamically registered provider models", async () => {
+			writeRawModelsJson({
+				"extension-provider": { compat: { supportsResponsesWebSocket: true } },
+			});
+
+			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+			registry.registerProvider(
+				"extension-provider",
+				providerConfig("https://provider.test/v1", [{ id: "extension-model" }], "openai-responses"),
+			);
+
+			const compat = registry.find("extension-provider", "extension-model")?.compat as
+				| OpenAIResponsesCompat
+				| undefined;
+			expect(compat?.supportsResponsesWebSocket).toBe(true);
 		});
 
 		test("stored API key env propagates to request auth and resolves headers", async () => {

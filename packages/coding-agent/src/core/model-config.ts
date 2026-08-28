@@ -113,6 +113,7 @@ const OpenAICompletionsCompatSchema = Type.Object({
 
 const OpenAIResponsesCompatSchema = Type.Object({
 	supportsDeveloperRole: Type.Optional(Type.Boolean()),
+	supportsResponsesWebSocket: Type.Optional(Type.Boolean()),
 	sessionAffinityFormat: Type.Optional(
 		Type.Union([Type.Literal("openai"), Type.Literal("openai-nosession"), Type.Literal("openrouter")]),
 	),
